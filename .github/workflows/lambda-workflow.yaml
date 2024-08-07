@@ -1,0 +1,85 @@
+name: Lambda Build, Test and deploy # Name of the Action
+
+# Actividad sobre la cual sondeará
+on:
+  push:
+    branches: [main-aws-lambda] # The Selected Branch that will run (on a push) the Actions
+
+# Configuración de variables de entorno en los cuales están secretos y nombres del recurso
+env:
+  # Variable para versionamiento de la lambda
+  RUN_ID: ${{ github.run_id }}
+  # Directorio sobre el cual empaquetará el code de la lambda
+  LAMBDA_FOLDER: src/lambdas/ams_lambda
+  # Name of the lambda function
+  FNC_NAME: AmsLambdaFunction
+
+jobs:
+  # Job que realiza el build, test, zip y upload hacia AWS
+  unit-test:
+    runs-on: ubuntu-latest # Ambiente en linux-ubuntu
+    environment:
+      name: dev
+    steps:
+      - uses: actions/checkout@v2 # Configuración requerida para GitHub
+        with:
+          fetch-depth: 0
+      # Configuración de ambiente de ejecución de la lambda en este caso Node.js
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.11"
+
+      - name: Setting AWS Configuration
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install coverage
+          if [ -f requirements.txt ]; then pip install -r $LAMBDA_FOLDER/requirements.txt; fi
+      - name: Run Coverage Test
+        run: |
+          echo "Unit test"
+          coverage run -m unittest discover
+          coverage xml -o coverage.xml
+
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+    needs: unit-test
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setting AWS Configuration
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Install dependencies
+        run: |
+            python -m pip install --upgrade pip
+            if [ -f requirements.txt ]; then pip install -r $LAMBDA_FOLDER/requirements.txt; fi
+
+      - name: "The package will be saved with the id:"
+        run: echo $RUN_ID
+
+      - name: Packaging lambda
+        run: zip -r API-$RUN_ID.zip $LAMBDA_FOLDER
+
+      - name: Deploy Lambda function
+        run: |
+            aws lambda update-function-code \
+              --function-name $FNC_NAME \
+              --zip-file fileb://API-$RUN_ID.zip
+      - name: Deploy API Gateway
+        run: |
+            aws apigateway create-deployment \
+              --rest-api-id ${{ secrets.AWS_API_ID }} \
+              --stage-name dev
